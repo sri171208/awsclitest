@@ -128,3 +128,19 @@ echo "Subnet Id's created are ::::   ${clusterSubnetID} :::: ${workLoadSubnetID}
 echo "routeTableId created ::::::::    ${routeTableId}"
 echo "finshed creating VPC, subnet and routetables"
 # end of create-aws-vpc
+
+#&&&&&&&&&&&&&&&&
+set -e
+folder="./"
+files=()
+echo "start to find json under folder: "$folder
+find $folder -name  "*-config.json" -print0 >tmpfile
+while IFS=  read -r -d $'\0'; do
+    files+=("$REPLY")
+done < tmpfile
+echo ${files[@]} #print all
+
+echo "input file: " ${files[$i]}
+jq -r '."'${key}'" = "'${value}'"' "${files[$i]}" > "${files[$i]}.new"
+echo "${files[$i]}.new""===>""${files[$i]}"
+mv "${files[$i]}.new" "${files[$i]}"
