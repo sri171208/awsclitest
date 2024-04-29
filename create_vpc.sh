@@ -129,18 +129,52 @@ echo "routeTableId created ::::::::    ${routeTableId}"
 echo "finshed creating VPC, subnet and routetables"
 # end of create-aws-vpc
 
-#&&&&&&&&&&&&&&&&
-set -e
-folder="./"
-files=()
-echo "start to find json under folder: "$folder
-find $folder -name  "*-config.json" -print0 >tmpfile
-while IFS=  read -r -d $'\0'; do
-    files+=("$REPLY")
-done < tmpfile
-echo ${files[@]} #print all
+# @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-echo "input file: " ${files[$i]}
-jq -r '."'${key}'" = "'${value}'"' "${files[$i]}" > "${files[$i]}.new"
-echo "${files[$i]}.new""===>""${files[$i]}"
-mv "${files[$i]}.new" "${files[$i]}"
+#!/bin/bash
+# delete-aws-vpc
+echo "Runnning script to remove routetables, subnet and VPC script"
+Region=$(echo $ALIASES | jq '.Region' -r cli-config.json)
+CliProfile=$(echo $ALIASES | jq '.CliProfile' -r cli-config.json)
+PocName=$(echo $ALIASES | jq '.PocName' -r cli-config.json)
+
+echo ${Region}
+echo ${CliProfile}
+echo ${PocName}
+#variables used in script:
+vpcTagName="vpc-myss-${PocName}"
+
+echo "Process started deleting vpc from lab account with this name ${vpcTagName}"
+export AWS_PROFILE=${CliProfile}
+read -r VpcId VPC_CIDR VPC_NAME < <(aws ec2 describe-vpcs \
+  --profile "${CliProfile}" \
+  --filters "Name=tag:Name,Values=${vpcTagName}"  \
+  --cliProfile "${CliProfile}" \
+  --query "Vpcs[*].[VpcId,CidrBlock,Tags[?Key == 'Name']|[0].Value]" \
+  --output text)
+
+echo "project name :${VpcId} ::: ${VPC_CIDR} :::: ${VPC_NAME}"
+#delete route to both Main and workload subnet
+echo "deleting main and subnet for vpc ...."
+for subnetId in $(aws ec2 describe-subnets \
+  --profile "${CliProfile}" \
+  --region "${Region}" \
+  --filters Name=vpc-id,Values=${VpcId} |  jq '.Subnets[].SubnetId' | tr -d '"'); 
+ do 
+ echo "deleting subnet id :::::  ${subnetId}"
+ aws ec2 delete-subnet \
+ --profile "${CliProfile}" \
+ --region "${Region}" \
+ --subnet-id ${subnetId} ; 
+ done 
+
+#add dns support
+echo "deleting vpc.... ${VpcId}"
+aws ec2 delete-vpc \
+ --profile "${CliProfile}" \
+ --region "${Region}" \
+ --vpc-id ${VpcId}
+
+echo "finished deleting Subnets"
+echo "finshed deleting VPC"
+# end of delete-aws-vpc
