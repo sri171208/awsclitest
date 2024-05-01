@@ -131,50 +131,13 @@ echo "finshed creating VPC, subnet and routetables"
 
 # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-#!/bin/bash
-# delete-aws-vpc
-echo "Runnning script to remove routetables, subnet and VPC script"
-Region=$(echo $ALIASES | jq '.Region' -r cli-config.json)
-CliProfile=$(echo $ALIASES | jq '.CliProfile' -r cli-config.json)
-PocName=$(echo $ALIASES | jq '.PocName' -r cli-config.json)
-
-echo ${Region}
-echo ${CliProfile}
-echo ${PocName}
-#variables used in script:
-vpcTagName="vpc-myss-${PocName}"
-
-echo "Process started deleting vpc from lab account with this name ${vpcTagName}"
-export AWS_PROFILE=${CliProfile}
-read -r VpcId VPC_CIDR VPC_NAME < <(aws ec2 describe-vpcs \
-  --profile "${CliProfile}" \
-  --filters "Name=tag:Name,Values=${vpcTagName}"  \
-  --cliProfile "${CliProfile}" \
-  --query "Vpcs[*].[VpcId,CidrBlock,Tags[?Key == 'Name']|[0].Value]" \
-  --output text)
-
-echo "project name :${VpcId} ::: ${VPC_CIDR} :::: ${VPC_NAME}"
-#delete route to both Main and workload subnet
-echo "deleting main and subnet for vpc ...."
-for subnetId in $(aws ec2 describe-subnets \
-  --profile "${CliProfile}" \
-  --region "${Region}" \
-  --filters Name=vpc-id,Values=${VpcId} |  jq '.Subnets[].SubnetId' | tr -d '"'); 
- do 
- echo "deleting subnet id :::::  ${subnetId}"
- aws ec2 delete-subnet \
- --profile "${CliProfile}" \
- --region "${Region}" \
- --subnet-id ${subnetId} ; 
- done 
-
-#add dns support
-echo "deleting vpc.... ${VpcId}"
-aws ec2 delete-vpc \
- --profile "${CliProfile}" \
- --region "${Region}" \
- --vpc-id ${VpcId}
-
-echo "finished deleting Subnets"
-echo "finshed deleting VPC"
-# end of delete-aws-vpc
+eks_cluster_create_response=$(aws eks create-cluster \
+    --name ${clusterName} \
+    --role-arn ${EksClusterRoleArn} \
+    --resources-vpc-config subnetIds=${Subnets},endpointPublicAccess=true,endpointPrivateAccess=true \
+    --logging '{"clusterLogging":[{"types":["api","audit","authenticator","controllerManager","scheduler"],"enabled":true}]}' \
+    --access-config authenticationMode=API_AND_CONFIG_MAP,bootstrapClusterCreatorAdminPermissions=false \
+    --profile ${CliProfile} \
+    --region ${Region} \
+    --tags '{"Environment": "lab", "Owner" : "Myss"}' \
+    --output json)
