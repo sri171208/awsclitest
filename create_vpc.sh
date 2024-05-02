@@ -131,13 +131,65 @@ echo "finshed creating VPC, subnet and routetables"
 
 # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-eks_cluster_create_response=$(aws eks create-cluster \
-    --name ${clusterName} \
-    --role-arn ${EksClusterRoleArn} \
-    --resources-vpc-config subnetIds=${Subnets},endpointPublicAccess=true,endpointPrivateAccess=true \
-    --logging '{"clusterLogging":[{"types":["api","audit","authenticator","controllerManager","scheduler"],"enabled":true}]}' \
-    --access-config authenticationMode=API_AND_CONFIG_MAP,bootstrapClusterCreatorAdminPermissions=false \
-    --profile ${CliProfile} \
-    --region ${Region} \
-    --tags '{"Environment": "lab", "Owner" : "Myss"}' \
-    --output json)
+CLUSTER_NAME=$(echo $ALIASES | jq '.cluster.Name' -r cli-config.json)
+CliProfile=$(echo $ALIASES | jq '.CliProfile' -r cli-config.json)
+CLUSTER_NAME=$(echo $ALIASES | jq '.cluster' -r cli-config.json)
+PocName=$(echo $ALIASES | jq '.PocName' -r cli-config.json)
+OIDC_ENDPOINT=$(echo $ALIASES | jq '.OIDC_ENDPOINT' -r cli-config.json)
+AWS_ACCOUNT_ID=$(echo $ALIASES | jq '.AWS_ACCOUNT_ID' -r cli-config.json)
+AWS_REGION=$(echo $ALIASES | jq '.AWS_REGION' -r cli-config.json)
+AWS_PARTITION="aws"
+echo " CLUSTER_NAME :::: ${CLUSTER_NAME} ::: ${OIDC_ENDPOINT} :::: ${AWS_ACCOUNT_ID}"
+echo " AWS_ACCOUNT_ID :::: ${AWS_ACCOUNT_ID} ::: ${AWS_REGION} :::: ${CliProfile}"
+
+suffix="eks_cluster_poc"
+instance_profile_suffix="ekspoc"
+karpenter_role_name="KarpenterNodeRole${instance_profile_suffix}"
+karpenter_instance_profile_name="KarpenterNodeInstanceProfile${instance_profile_suffix}"
+karpenterNodeRoleArn=$(aws iam create-role \
+    --role-name "${karpenter_role_name}" \
+    --assume-role-policy-document file://eksNodeRole.json \
+    --profile "${CliProfile}" \
+    --max-session-duration 7200 |  jq '.Role.Arn' | tr -d '"')
+
+echo "Karpenter node role :::::  $karpenterNodeRoleArn"
+
+aws iam attach-role-policy --role-name "${karpenter_role_name}" \
+    --policy-arn arn:${AWS_PARTITION}:iam::aws:policy/AmazonEKSWorkerNodePolicy \
+    --profile "${CliProfile}"
+aws iam attach-role-policy --role-name "${karpenter_role_name}" \
+    --policy-arn arn:${AWS_PARTITION}:iam::aws:policy/AmazonEKS_CNI_Policy \
+    --profile "${CliProfile}" 
+
+aws iam attach-role-policy --role-name "${karpenter_role_name}" \
+    --policy-arn arn:${AWS_PARTITION}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly \
+    --profile "${CliProfile}" 
+
+aws iam attach-role-policy --role-name "${karpenter_role_name}" \
+    --policy-arn arn:${AWS_PARTITION}:iam::aws:policy/AmazonSSMManagedInstanceCore \
+    --profile "${CliProfile}" 
+
+echo "creating instance profile"
+
+
+karpenterInstanceProfileArn=$(aws iam create-instance-profile \
+    --profile "${CliProfile}" \
+    --instance-profile-name $karpenter_instance_profile_name |  jq '.InstanceProfile.Arn' | tr -d '"')
+
+aws iam add-role-to-instance-profile \
+    --instance-profile-name $karpenter_instance_profile_name \
+    --role-name $karpenter_role_name \
+    --profile "${CliProfile}"
+
+karpenterControllerRoleArn=$(aws iam create-role --role-name KarpenterControllerRole${suffix} \
+    --assume-role-policy-document file://karpenter-controller-trust-policy.json \
+    --profile "${CliProfile}" |  jq '.Role.Arn' | tr -d '"')
+
+aws iam put-role-policy --role-name KarpenterControllerRole-${suffix} \
+    --policy-name KarpenterControllerPolicy-${suffix} \
+    --policy-document file://karpenter-controller-policy.json \
+    --profile "${CliProfile}"
+
+#./update_cli_json.sh "karpenterControllerRoleArn" ${karpenterControllerRoleArn}
+#./update_cli_json.sh "karpenterInstanceProfileArn" ${karpenterInstanceProfileArn}
+#./update_cli_json.sh "karpenterNodeRoleArn" ${karpenterNodeRoleArn}
