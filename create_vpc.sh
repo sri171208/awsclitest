@@ -196,101 +196,323 @@ aws iam put-role-policy --role-name KarpenterControllerRole-${suffix} \
 
 #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-#!/bin/bash
-Region=$(echo $ALIASES | jq '.Region' -r cli-config.json)
-CliProfile=$(echo $ALIASES | jq '.CliProfile' -r cli-config.json)
-PocName=$(echo $ALIASES | jq '.PocName' -r cli-config.json)
-Subnets=$(echo $ALIASES | jq '.Subnets' -r cli-config.json)
-EksVersion=$(echo $ALIASES | jq '.EksVersion' -r cli-config.json)
-EksNodeRoleArn=$(echo $ALIASES | jq '.EksNodeRoleArn' -r cli-config.json)
-EksNodeInstanceProfileArn=$(echo $ALIASES | jq '.EksNodeInstanceProfileArn' -r cli-config.json)
 
-EksClusterName=$(echo $ALIASES | jq '.EksClusterName' -r cli-config.json)
-VpcId=$(echo $ALIASES | jq '.VpcId' -r cli-config.json)
-VpcCidr=$(echo $ALIASES | jq '.VpcCidr' -r cli-config.json)
+AWSTemplateFormatVersion: 2010-09-09
+Description: Amazon EKS - Node Group
+Parameters:
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instances
+    Type: String
+  NodeImageId:
+    Description: AMI id for the node instances.
+    Type: 'AWS::EC2::Image::Id'
+  NodeInstanceType:
+    Description: EC2 instance type for the node instances
+    Type: String
+    Default: t2.small
+    ConstraintDescription: Must be a valid EC2 instance type
+    AllowedValues:
+      - t2.small
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+      - t2.2xlarge
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+      - m3.medium
+      - m3.large
+      - m3.xlarge
+      - m3.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m4.10xlarge
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+      - m5.12xlarge
+      - m5.24xlarge
+      - c4.large
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - c4.8xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+      - c5.9xlarge
+      - c5.18xlarge
+      - i3.large
+      - i3.xlarge
+      - i3.2xlarge
+      - i3.4xlarge
+      - i3.8xlarge
+      - i3.16xlarge
+      - r3.xlarge
+      - r3.2xlarge
+      - r3.4xlarge
+      - r3.8xlarge
+      - r4.large
+      - r4.xlarge
+      - r4.2xlarge
+      - r4.4xlarge
+      - r4.8xlarge
+      - r4.16xlarge
+      - x1.16xlarge
+      - x1.32xlarge
+      - p2.xlarge
+      - p2.8xlarge
+      - p2.16xlarge
+      - p3.2xlarge
+      - p3.8xlarge
+      - p3.16xlarge
+      - p3dn.24xlarge
+      - r5.large
+      - r5.xlarge
+      - r5.2xlarge
+      - r5.4xlarge
+      - r5.12xlarge
+      - r5.24xlarge
+      - r5d.large
+      - r5d.xlarge
+      - r5d.2xlarge
+      - r5d.4xlarge
+      - r5d.12xlarge
+      - r5d.24xlarge
+      - z1d.large
+      - z1d.xlarge
+      - z1d.2xlarge
+      - z1d.3xlarge
+      - z1d.6xlarge
+      - z1d.12xlarge
+  NodeAutoScalingGroupMinSize:
+    Description: Minimum size of Node Group ASG.
+    Type: Number
+    Default: 1
+  NodeAutoScalingGroupMaxSize:
+    Description: >-
+      Maximum size of Node Group ASG. Set to at least 1 greater than
+      NodeAutoScalingGroupDesiredCapacity.
+    Type: Number
+    Default: 2
+  NodeAutoScalingGroupDesiredCapacity:
+    Description: Desired capacity of Node Group ASG.
+    Type: Number
+    Default: 1
+  NodeVolumeSize:
+    Description: Node volume size
+    Type: Number
+    Default: 20
+  ClusterName:
+    Description: >-
+      The cluster name provided when the cluster was created. If it is
+      incorrect, nodes will not be able to join the cluster.
+    Type: String
+  BootstrapArguments:
+    Description: >-
+      Arguments to pass to the bootstrap script. See files/bootstrap.sh in
+      https://github.com/awslabs/amazon-eks-ami
+    Type: String
+    Default: ''
+  NodeGroupName:
+    Description: Unique identifier for the Node Group.
+    Type: String
+  NodeInstanceRole:
+    Description: Unique identifier for the Node Instance Role.
+    Type: String
+  NodeInstanceRoleArn:
+    Description: Unique identifier for the Node Role Arn.
+    Type: String  
+  EndpointSecurityGroup:
+    Description: Additional VPC endpoint security group to grant to worker nodes.
+    Type: 'AWS::EC2::SecurityGroup::Id'
+  NodeSecurityGroup:
+    Description: NodeGroup security group to grant to worker nodes.
+    Type: 'AWS::EC2::SecurityGroup::Id'
+  VpcId:
+    Description: The VPC of the worker instances
+    Type: 'AWS::EC2::VPC::Id'
+  VpcCidr:
+    Description: The CIDR of the VPC for the worker instances
+    Type: String
+  Subnets:
+    Description: The subnets where workers can be created.
+    Type: 'List<AWS::EC2::Subnet::Id>'
+  ClusterAPIEndpoint:
+    Description: Private API endpoint for EKS cluster
+    Type: String
+  HttpsProxy:
+    Description: HTTPS proxy for access to external resources such as ECR 
+    Type: String
+  ClusterCA:
+    Description: Certificate for EKS cluster
+    Type: String
+  UserToken:
+    Description: Temporary Kubernetes user credentials token
+    Type: String
+  KubectlS3Location:
+    Description: Where in S3 can the Kubectl binary be found
+    Type: String
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: EKS Cluster
+        Parameters:
+          - ClusterName
+          - EndpointSecurityGroup
+      - Label:
+          default: Worker Node Configuration
+        Parameters:
+          - NodeInstanceRole
+          - NodeInstanceRoleArn
+          - NodeGroupName
+          - NodeSecurityGroup
+          - NodeAutoScalingGroupMinSize
+          - NodeAutoScalingGroupDesiredCapacity
+          - NodeAutoScalingGroupMaxSize
+          - NodeInstanceType
+          - NodeImageId
+          - NodeVolumeSize
+          - KeyName
+          - BootstrapArguments
+      - Label:
+          default: Worker Network Configuration
+        Parameters:
+          - VpcId
+          - Subnets
 
-EksEndPointSG=$(echo $ALIASES | jq '.EksEndPointSG' -r cli-config.json)
-EksClusterSharedNodeSG=$(echo $ALIASES | jq '.EksClusterSharedNodeSG' -r cli-config.json)
+Conditions:
+  UseEC2KeyPair: !Not [!Equals [!Ref KeyName, ""]]
 
+## RESOURCES
+Resources:
+  NodeInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref NodeInstanceRole
+  NodeGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      DesiredCapacity: !Ref NodeAutoScalingGroupDesiredCapacity
+      LaunchConfigurationName: !Ref NodeLaunchConfig
+      MinSize: !Ref NodeAutoScalingGroupMinSize
+      MaxSize: !Ref NodeAutoScalingGroupMaxSize
+      VPCZoneIdentifier: !Ref Subnets
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-${NodeGroupName}-Node'
+          PropagateAtLaunch: true
+        - Key: !Sub 'kubernetes.io/cluster/${ClusterName}'
+          Value: owned
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: !Ref NodeAutoScalingGroupDesiredCapacity
+        PauseTime: PT5M
+  NodeLaunchConfig:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      AssociatePublicIpAddress: false
+      IamInstanceProfile: !Ref NodeInstanceProfile
+      ImageId: !Ref NodeImageId
+      InstanceType: !Ref NodeInstanceType
+      KeyName: !If [UseEC2KeyPair, !Ref KeyName, !Ref "AWS::NoValue"]
+      SecurityGroups:
+        - !Ref NodeSecurityGroup
+        - !Ref EndpointSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref NodeVolumeSize
+            VolumeType: gp2
+            DeleteOnTermination: true
+      UserData:
+        'Fn::Base64': !Sub |
+          #!/bin/bash
 
-ami_id=ami-0dd7700dbc8215f3d
-key_pair=""
-proxy_url=""
-instance_type=t2.small
-s3_bucket="eks-demo-private-cluster"
-stack_name="${EksClusterName}-nodegroup-stack"
-nodeGroupName="myss-eks-${PocName}-nodegroup"
+          set -o xtrace
+          echo "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ inside user data @@@@@@@@@@@@@@@@@"
+          echo "installing SSM agent$$$$$$$$$$$$$$$$$$$$$$$$"
+          # Install the SSM Agent so we can remotely access the worker node if necessary
+          yum install -y amazon-ssm-agent 
+          systemctl enable amazon-ssm-agent
+          systemctl start amazon-ssm-agent
+          systemctl status amazon-ssm-agent
 
+          CLUSTER_API_HOSTNAME=`basename ${ClusterAPIEndpoint}`
+          echo " cluster api hostname :::: $CLUSTER_API_HOSTNAME"
+          echo "downloading from s3 ....."
+          aws s3 cp ${KubectlS3Location} /tmp/kubectl --region ${AWS::Region}
+          chmod 755 /tmp/kubectl
 
-echo " Region ::: ${Region} :::: CliProfile :::: ${CliProfile} :::: PocName :::${PocName}"
-echo " EksNodeRoleArn ::: ${EksNodeRoleArn} ::::  Subnets  :::: ${Subnets}"
-echo " EksVersion :::: ${EksVersion}"
+          /tmp/kubectl config set-cluster cfc --server=${ClusterAPIEndpoint}
+          /tmp/kubectl config set clusters.cfc.certificate-authority-data ${ClusterCA}
+          /tmp/kubectl config set-credentials user --token=${UserToken}
+          /tmp/kubectl config set-context cfc --cluster=cfc --user=user
+          /tmp/kubectl config use-context cfc
+          
+          echo "applying kubectl on aws auth "
+          cat <<EOF >/tmp/aws-auth-cm.yaml
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: aws-auth
+            namespace: kube-system
+          data:
+            mapRoles: |
+              - rolearn: '${NodeInstanceRoleArn}'
+                username: system:node:{{EC2PrivateDNSName}}
+                groups:
+                  - system:bootstrappers
+                  - system:nodes
+          EOF
 
+          /tmp/kubectl get cm -n kube-system aws-auth
+          if [ $? -ne 0 ]; 
+          then
+            echo "applying kubectl aws auth"
+            /tmp/kubectl apply -f /tmp/aws-auth-cm.yaml
+          fi
 
-echo "creating access entry for node role....."
-access_entry_node_role=$(aws eks create-access-entry \
-    --cluster-name my-cluster \
-    --principal-arn ${EksNodeRoleArn} \
-    --type "EC2_LINUX" \
-    --output text \
-    --region ${Region} \
-    --profile ${CliProfile})
+          if [ "${HttpsProxy}" != "" ];
+          then
+          cat <<EOF >/tmp/http-proxy.conf
+          [Service]
+          Environment="https_proxy=${HttpsProxy}"
+          Environment="HTTPS_PROXY=${HttpsProxy}"
+          Environment="http_proxy=${HttpsProxy}"
+          Environment="HTTP_PROXY=${HttpsProxy}"
+          Environment="NO_PROXY=169.254.169.254,${VpcCidr},$CLUSTER_API_HOSTNAME,s3.amazonaws.com,s3.${AWS::Region}.amazonaws.com,ec2.${AWS::Region}.amazonaws.com,ecr.${AWS::Region}.amazonaws.com,dkr.ecr.${AWS::Region}.amazonaws.com"
+          EOF
+          
+          mkdir -p /usr/lib/systemd/system/docker.service.d
+          cp /tmp/http-proxy.conf /etc/systemd/system/kubelet.service.d/
+          cp /tmp/http-proxy.conf /usr/lib/systemd/system/docker.service.d/
+          fi
 
-echo ${access_entry_node_role}
+          /etc/eks/bootstrap.sh ${ClusterName} --b64-cluster-ca ${ClusterCA} --apiserver-endpoint ${ClusterAPIEndpoint} --kubelet-extra-args "--node-labels=workergroup=${NodeGroupName}" ${BootstrapArguments}
 
-echo "reading eks cluster endpoint,cert data and token"
-end_point=$(aws eks describe-cluster --name ${EksClusterName} \
-    --query 'cluster.endpoint' \
-    --output text \
-    --region ${Region} \
-    --profile ${CliProfile})
+          systemctl daemon-reload
+          systemctl restart docker
 
-cert_data=$(aws eks describe-cluster \
-    --name ${EksClusterName} \
-    --query 'cluster.certificateAuthority.data' \
-    --output text \
-    --region ${Region} \
-    --profile ${CliProfile})
-token=$(aws eks get-token \
-    --cluster-name ${EksClusterName} \
-    --profile ${CliProfile} \
-    --region ${Region} | jq -r '.status.token')
+          yum install -y iptables-services
+          iptables --insert FORWARD 1 --in-interface eni+ --destination 169.254.169.254/32 --jump DROP
+          iptables-save | tee /etc/sysconfig/iptables 
+          systemctl enable --now iptables
 
-echo "token ::: $token :::  end_point :::: $end_point ::::  cert_data :::: $cert_data "
-
-echo "creating eks nodegroup .... ${nodeGroupName} in cluster ::: ${EksClusterName}"
-
-echo "calling cloudformation stack for creating NodeGroup with autoscaling and launch template...."
-
-#echo Staging kubectl to S3
-#curl -sLO https://storage.googleapis.com/kubernetes-release/release/`curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt`/bin/linux/amd64/kubectl
-#aws s3 cp --profile ${CliProfile} --region ${Region} kubectl s3://${s3_bucket}/kubectl
-#rm kubectl
-
-aws cloudformation deploy \
-        --template-file cloudformation/eks-nodegroup.yaml \
-        --stack-name ${stack_name} \
-        --capabilities CAPABILITY_IAM \
-        --region ${Region} \
-        --profile ${CliProfile} \
-        --parameter-overrides EndpointSecurityGroup=${EksEndPointSG} \
-        ClusterName=${EksClusterName} \
-        KeyName=${key_pair} \
-        NodeGroupName=${nodeGroupName} \
-        NodeInstanceRole=eksNodeRole \
-        NodeInstanceRoleArn=${EksNodeRoleArn} \
-        NodeImageId=${ami_id} \
-        NodeInstanceType=${instance_type} \
-        Subnets=${Subnets} \
-        VpcId=${VpcId} \
-        VpcCidr=${VpcCidr} \
-        ClusterAPIEndpoint=${end_point} \
-        ClusterCA=${cert_data} \
-        HttpsProxy=${proxy_url} \
-        NodeSecurityGroup=${EksClusterSharedNodeSG} \
-        UserToken=${token} \
-        KubectlS3Location="s3://${s3_bucket}/kubectl"
-
-
-
-echo "@@@@@@ completed creating nodegroup ${nodeGroupName} for eks cluster .... ${clusterName}"
+          /opt/aws/bin/cfn-signal --exit-code $? \
+                   --stack  ${AWS::StackName} \
+                   --resource NodeGroup  \
+                   --region ${AWS::Region}
