@@ -196,41 +196,101 @@ aws iam put-role-policy --role-name KarpenterControllerRole-${suffix} \
 
 #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-#./update_cli_json.sh "EksClusterName" ${clusterName}
-eks_cluster_create_response=$(aws eks create-cluster \
-    --name ${clusterName} \
-    --role-arn ${EksClusterRoleArn} \
-    --resources-vpc-config subnetIds=${Subnets},endpointPublicAccess=false,endpointPrivateAccess=true,securityGroupIds="${vpc_default_sg_id}" \
-    --logging '{"clusterLogging":[{"types":["api","audit","authenticator","controllerManager","scheduler"],"enabled":true}]}' \
-    --access-config authenticationMode=API_AND_CONFIG_MAP,bootstrapClusterCreatorAdminPermissions=true \
+#!/bin/bash
+Region=$(echo $ALIASES | jq '.Region' -r cli-config.json)
+CliProfile=$(echo $ALIASES | jq '.CliProfile' -r cli-config.json)
+PocName=$(echo $ALIASES | jq '.PocName' -r cli-config.json)
+Subnets=$(echo $ALIASES | jq '.Subnets' -r cli-config.json)
+EksVersion=$(echo $ALIASES | jq '.EksVersion' -r cli-config.json)
+EksNodeRoleArn=$(echo $ALIASES | jq '.EksNodeRoleArn' -r cli-config.json)
+EksNodeInstanceProfileArn=$(echo $ALIASES | jq '.EksNodeInstanceProfileArn' -r cli-config.json)
+
+EksClusterName=$(echo $ALIASES | jq '.EksClusterName' -r cli-config.json)
+VpcId=$(echo $ALIASES | jq '.VpcId' -r cli-config.json)
+VpcCidr=$(echo $ALIASES | jq '.VpcCidr' -r cli-config.json)
+
+EksEndPointSG=$(echo $ALIASES | jq '.EksEndPointSG' -r cli-config.json)
+EksClusterSharedNodeSG=$(echo $ALIASES | jq '.EksClusterSharedNodeSG' -r cli-config.json)
+
+
+ami_id=ami-0dd7700dbc8215f3d
+key_pair=""
+proxy_url=""
+instance_type=t2.small
+s3_bucket="eks-demo-private-cluster"
+stack_name="${EksClusterName}-nodegroup-stack"
+nodeGroupName="myss-eks-${PocName}-nodegroup"
+
+
+echo " Region ::: ${Region} :::: CliProfile :::: ${CliProfile} :::: PocName :::${PocName}"
+echo " EksNodeRoleArn ::: ${EksNodeRoleArn} ::::  Subnets  :::: ${Subnets}"
+echo " EksVersion :::: ${EksVersion}"
+
+
+echo "creating access entry for node role....."
+access_entry_node_role=$(aws eks create-access-entry \
+    --cluster-name my-cluster \
+    --principal-arn ${EksNodeRoleArn} \
+    --type "EC2_LINUX" \
+    --output text \
+    --region ${Region} \
+    --profile ${CliProfile})
+
+echo ${access_entry_node_role}
+
+echo "reading eks cluster endpoint,cert data and token"
+end_point=$(aws eks describe-cluster --name ${EksClusterName} \
+    --query 'cluster.endpoint' \
+    --output text \
+    --region ${Region} \
+    --profile ${CliProfile})
+
+cert_data=$(aws eks describe-cluster \
+    --name ${EksClusterName} \
+    --query 'cluster.certificateAuthority.data' \
+    --output text \
+    --region ${Region} \
+    --profile ${CliProfile})
+token=$(aws eks get-token \
+    --cluster-name ${EksClusterName} \
     --profile ${CliProfile} \
-    --region ${Region} \
-    --tags '{"Environment": "lab", "Owner" : "Myss"}' \
-    --output json)
+    --region ${Region} | jq -r '.status.token')
 
-echo ${eks_cluster_create_response}
-#platformVersion=$(echo -e "$eks_cluster_create_response" |  jq '.cluster.platformVersion' | tr -d '"')
-#./update_cli_json.sh "EksPlatformVersion" ${platformVersion}
+echo "token ::: $token :::  end_point :::: $end_point ::::  cert_data :::: $cert_data "
 
-echo "@@@@@@ completed creating eks cluster .... ${clusterName}"
+echo "creating eks nodegroup .... ${nodeGroupName} in cluster ::: ${EksClusterName}"
 
-while [ $(aws eks describe-cluster --name ${clusterName} --query 'cluster.status' --output text --region ${Region}) == "CREATING" ]
-do
-    echo Cluster ${clusterName} status: CREATING...
-    sleep 60
-done
-echo Cluster ${clusterName} is ACTIVE
+echo "calling cloudformation stack for creating NodeGroup with autoscaling and launch template...."
 
-ISSUER_URL=$(aws eks describe-cluster --name $clusterName --query cluster.identity.oidc.issuer --output text --region $Region)
-AWS_FINGERPRINT=9E99A48A9960B14926BB7F3B02E22DA2B0AB7280
+#echo Staging kubectl to S3
+#curl -sLO https://storage.googleapis.com/kubernetes-release/release/`curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt`/bin/linux/amd64/kubectl
+#aws s3 cp --profile ${CliProfile} --region ${Region} kubectl s3://${s3_bucket}/kubectl
+#rm kubectl
 
-aws iam create-open-id-connect-provider \
-    --url $ISSUER_URL \
-    --thumbprint-list $AWS_FINGERPRINT \
-    --client-id-list sts.amazonaws.com \
-    --region ${Region} \
-    --profile ${CliProfile}
+aws cloudformation deploy \
+        --template-file cloudformation/eks-nodegroup.yaml \
+        --stack-name ${stack_name} \
+        --capabilities CAPABILITY_IAM \
+        --region ${Region} \
+        --profile ${CliProfile} \
+        --parameter-overrides EndpointSecurityGroup=${EksEndPointSG} \
+        ClusterName=${EksClusterName} \
+        KeyName=${key_pair} \
+        NodeGroupName=${nodeGroupName} \
+        NodeInstanceRole=eksNodeRole \
+        NodeInstanceRoleArn=${EksNodeRoleArn} \
+        NodeImageId=${ami_id} \
+        NodeInstanceType=${instance_type} \
+        Subnets=${Subnets} \
+        VpcId=${VpcId} \
+        VpcCidr=${VpcCidr} \
+        ClusterAPIEndpoint=${end_point} \
+        ClusterCA=${cert_data} \
+        HttpsProxy=${proxy_url} \
+        NodeSecurityGroup=${EksClusterSharedNodeSG} \
+        UserToken=${token} \
+        KubectlS3Location="s3://${s3_bucket}/kubectl"
 
-echo Registered OpenID Connect provider with IAM
 
-#./update_cli_json.sh Region ${Region}
+
+echo "@@@@@@ completed creating nodegroup ${nodeGroupName} for eks cluster .... ${clusterName}"
