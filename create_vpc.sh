@@ -193,3 +193,77 @@ aws iam put-role-policy --role-name KarpenterControllerRole-${suffix} \
 #./update_cli_json.sh "karpenterControllerRoleArn" ${karpenterControllerRoleArn}
 #./update_cli_json.sh "karpenterInstanceProfileArn" ${karpenterInstanceProfileArn}
 #./update_cli_json.sh "karpenterNodeRoleArn" ${karpenterNodeRoleArn}
+
+#@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+Region=$(echo $ALIASES | jq '.Region' -r cli-config.json)
+CliProfile=$(echo $ALIASES | jq '.CliProfile' -r cli-config.json)
+PocName=$(echo $ALIASES | jq '.PocName' -r cli-config.json)
+clusterName=$(echo $ALIASES | jq '.EksClusterName' -r cli-config.json)
+VpcId=$(echo $ALIASES | jq '.VpcId' -r cli-config.json)
+vpc_default_sg_id=$(echo $ALIASES | jq '.VpcDefaultSG' -r cli-config.json)
+cluster_sharednode_sg_id=$(echo $ALIASES | jq '.EksClusterSharedNodeSG' -r cli-config.json)
+
+if [ -z "${cluster_sharednode_sg_id}" ]; then
+    echo "creating cluster shared node security group....."
+    cluster_sharednode_sg_id=$(aws ec2 create-security-group \
+        --group-name "${clusterName}-ClusterSharedNodeSecurityGroup" \
+        --description "Communication between all nodes in the cluster" \
+        --vpc-id ${VpcId} \
+        --tag-specifications ResourceType=security-group,Tags="[{Key=Name,Value='${clusterName}-ClusterSharedNodeSecurityGroup'}, {Key=Environment,Value='lab'},{Key=Owner,Value='Myss'}]" \
+        --profile ${CliProfile} \
+        --region ${Region} \
+        --output json | jq '.GroupId' | tr -d '"' )
+
+    echo "created cluster shared node security group :::: ${cluster_sharednode_sg_id}"
+    ./update_cli_json.sh "EksClusterSharedNodeSG" ${cluster_sharednode_sg_id}
+fi
+
+#start worker node security groups rules
+aws ec2 authorize-security-group-ingress \
+    --group-id ${cluster_sharednode_sg_id} \
+    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs="[{GroupId=$vpc_default_sg_id}]" \
+    --profile ${CliProfile} \
+    --region ${Region}
+
+aws ec2 authorize-security-group-ingress \
+    --group-id ${cluster_sharednode_sg_id} \
+    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=1025,ToPort=65535,UserIdGroupPairs="[{GroupId=$vpc_default_sg_id}]" \
+    --profile ${CliProfile} \
+    --region ${Region}
+
+aws ec2 authorize-security-group-ingress \
+    --group-id ${cluster_sharednode_sg_id} \
+    --ip-permissions IpProtocol=all,FromPort=-1,ToPort=1,UserIdGroupPairs="[{GroupId=${cluster_sharednode_sg_id},Description='all traffic from worker nodes'}]" \
+    --profile ${CliProfile} \
+    --region ${Region}
+echo "completed worker node security group rules :: ${cluster_sharednode_sg_id}"
+#end worker node security group rules
+
+#start default security groups rules
+aws ec2 authorize-security-group-ingress \
+    --group-id ${vpc_default_sg_id} \
+    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs="[{GroupId=$cluster_sharednode_sg_id}]" \
+    --profile ${CliProfile} \
+    --region ${Region}
+
+aws ec2 revoke-security-group-egress \
+    --group-id ${vpc_default_sg_id} \
+    --ip-permissions  --ip-permissions IpProtocol=all,FromPort=-1,ToPort=1,IpRanges="[{CidrIp=0.0.0.0/0}]" \
+    --profile ${CliProfile} \
+    --region ${Region}
+
+aws ec2 authorize-security-group-egress \
+    --group-id ${vpc_default_sg_id} \
+    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=1025,ToPort=65535,UserIdGroupPairs="[{GroupId=$cluster_sharednode_sg_id}]" \
+    --profile ${CliProfile} \
+    --region ${Region}
+aws ec2 authorize-security-group-egress \
+    --group-id ${vpc_default_sg_id} \
+    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs="[{GroupId=$cluster_sharednode_sg_id}]" \
+    --profile ${CliProfile} \
+    --region ${Region}
+
+echo "completed default security group rules :: ${vpc_default_sg_id}"
+
+#start default security groups rules
