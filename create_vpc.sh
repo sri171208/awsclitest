@@ -196,74 +196,68 @@ aws iam put-role-policy --role-name KarpenterControllerRole-${suffix} \
 
 #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
+#!/bin/bash
+
+set -e
+
+source inputVariables.sh 
+
 Region=$(echo $ALIASES | jq '.Region' -r cli-config.json)
 CliProfile=$(echo $ALIASES | jq '.CliProfile' -r cli-config.json)
 PocName=$(echo $ALIASES | jq '.PocName' -r cli-config.json)
-clusterName=$(echo $ALIASES | jq '.EksClusterName' -r cli-config.json)
+clusterName="myss-eks-${PocName}-cluster"
 VpcId=$(echo $ALIASES | jq '.VpcId' -r cli-config.json)
-vpc_default_sg_id=$(echo $ALIASES | jq '.VpcDefaultSG' -r cli-config.json)
-cluster_sharednode_sg_id=$(echo $ALIASES | jq '.EksClusterSharedNodeSG' -r cli-config.json)
+SubnetsList=$(echo $ALIASES | jq '.SubnetsList' -r cli-config.json)
+Subnets=$(echo $ALIASES | jq '.Subnets' -r cli-config.json)
+vpc_endpoints_sg_id=$(echo $ALIASES | jq '.EksEndPointSG' -r cli-config.json)
 
-if [ -z "${cluster_sharednode_sg_id}" ]; then
-    echo "creating cluster shared node security group....."
-    cluster_sharednode_sg_id=$(aws ec2 create-security-group \
-        --group-name "${clusterName}-ClusterSharedNodeSecurityGroup" \
-        --description "Communication between all nodes in the cluster" \
+if [ -z "${vpc_endpoints_sg_id}" ]; then
+
+    echo "creating endpoint security group "
+    vpc_endpoints_sg_id=$(aws ec2 create-security-group \
+    --group-name "${clusterName}-EndpointClientSecurityGroup" \
+    --description "Security group to designate resources access to the VPC endpoints" \
+    --vpc-id ${VpcId} \
+    --tag-specifications ResourceType=security-group,Tags="[{Key=Name,Value='${clusterName}-EndpointClientSecurityGroup'}, {Key=Environment,Value='lab'},{Key=Owner,Value='Myss'}]" \
+    --profile ${CliProfile} \
+    --region ${Region} \
+    --output json | jq '.GroupId' | tr -d '"' )
+
+    echo "vpc endpoint security group :::: ${vpc_endpoints_sg_id}"
+
+    #start control plane security groups rules
+
+    aws ec2 authorize-security-group-ingress \
+    --group-id ${vpc_endpoints_sg_id} \
+        --ip-permissions IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs="[{GroupId=${vpc_endpoints_sg_id},Description='ingress from same security group'}]" \
+        --profile ${CliProfile} \
+        --region ${Region}
+    
+    # end control plane security groups
+    ./update_cli_json.sh "EksEndPointSG" ${vpc_endpoints_sg_id}
+fi
+echo "end point security group id ${vpc_endpoints_sg_id}"
+echo "checking any service endpoints need to be created $ENDPOINT_SERVICES_LIST"
+for endpoint_service in ${ENDPOINT_SERVICES_LIST//,/ }  #$(echo $ENDPOINT_SERVICES_LIST | sed "s/,/ /g")
+do
+    # call your procedure/other scripts here below
+    echo " endpoint service ::::: ${endpoint_service}"
+    aws ec2 create-vpc-endpoint \
         --vpc-id ${VpcId} \
-        --tag-specifications ResourceType=security-group,Tags="[{Key=Name,Value='${clusterName}-ClusterSharedNodeSecurityGroup'}, {Key=Environment,Value='lab'},{Key=Owner,Value='Myss'}]" \
+        --vpc-endpoint-type Interface \
+        --service-name ${endpoint_service} \
+        --subnet-ids "${SubnetsList}"\
+        --security-group-id ${vpc_endpoints_sg_id} \
+        --tag-specifications ResourceType=vpc-endpoint,Tags="[{Key=Environment,Value='lab'},{Key=Owner,Value='Myss'}]" \
         --profile ${CliProfile} \
         --region ${Region} \
-        --output json | jq '.GroupId' | tr -d '"' )
+        --output json
+    echo "completed endpoint for service ${endpoint_service}"
+done
 
-    echo "created cluster shared node security group :::: ${cluster_sharednode_sg_id}"
-    ./update_cli_json.sh "EksClusterSharedNodeSG" ${cluster_sharednode_sg_id}
-fi
 
-#start worker node security groups rules
-aws ec2 authorize-security-group-ingress \
-    --group-id ${cluster_sharednode_sg_id} \
-    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs="[{GroupId=$vpc_default_sg_id}]" \
-    --profile ${CliProfile} \
-    --region ${Region}
+#!/bin/bash
 
-aws ec2 authorize-security-group-ingress \
-    --group-id ${cluster_sharednode_sg_id} \
-    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=1025,ToPort=65535,UserIdGroupPairs="[{GroupId=$vpc_default_sg_id}]" \
-    --profile ${CliProfile} \
-    --region ${Region}
-
-aws ec2 authorize-security-group-ingress \
-    --group-id ${cluster_sharednode_sg_id} \
-    --ip-permissions IpProtocol=all,FromPort=-1,ToPort=1,UserIdGroupPairs="[{GroupId=${cluster_sharednode_sg_id},Description='all traffic from worker nodes'}]" \
-    --profile ${CliProfile} \
-    --region ${Region}
-echo "completed worker node security group rules :: ${cluster_sharednode_sg_id}"
-#end worker node security group rules
-
-#start default security groups rules
-aws ec2 authorize-security-group-ingress \
-    --group-id ${vpc_default_sg_id} \
-    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs="[{GroupId=$cluster_sharednode_sg_id}]" \
-    --profile ${CliProfile} \
-    --region ${Region}
-
-aws ec2 revoke-security-group-egress \
-    --group-id ${vpc_default_sg_id} \
-    --ip-permissions  --ip-permissions IpProtocol=all,FromPort=-1,ToPort=1,IpRanges="[{CidrIp=0.0.0.0/0}]" \
-    --profile ${CliProfile} \
-    --region ${Region}
-
-aws ec2 authorize-security-group-egress \
-    --group-id ${vpc_default_sg_id} \
-    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=1025,ToPort=65535,UserIdGroupPairs="[{GroupId=$cluster_sharednode_sg_id}]" \
-    --profile ${CliProfile} \
-    --region ${Region}
-aws ec2 authorize-security-group-egress \
-    --group-id ${vpc_default_sg_id} \
-    --ip-permissions  --ip-permissions IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs="[{GroupId=$cluster_sharednode_sg_id}]" \
-    --profile ${CliProfile} \
-    --region ${Region}
-
-echo "completed default security group rules :: ${vpc_default_sg_id}"
-
-#start default security groups rules
+ENDPOINT_SERVICES_LIST="com.amazonaws.us-east-2.logs,com.amazonaws.us-east-2.ecr.api,com.amazonaws.us-east-2.ssm,com.amazonaws.us-east-2.ecr.dkr,com.amazonaws.us-east-2.autoscaling, com.amazonaws.us-east-2.ec2, com.amazonaws.us-east-2.ssmmessages, com.amazonaws.us-east-2.sts"
+#ENDPOINT_SERVICES_LIST="com.amazonaws.us-east-2.logs,com.amazonaws.us-east-2.ecr.api"
+#ENDPOINT_SERVICES_LIST=""
