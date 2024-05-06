@@ -196,68 +196,41 @@ aws iam put-role-policy --role-name KarpenterControllerRole-${suffix} \
 
 #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-#!/bin/bash
-
-set -e
-
-source inputVariables.sh 
-
-Region=$(echo $ALIASES | jq '.Region' -r cli-config.json)
-CliProfile=$(echo $ALIASES | jq '.CliProfile' -r cli-config.json)
-PocName=$(echo $ALIASES | jq '.PocName' -r cli-config.json)
-clusterName="myss-eks-${PocName}-cluster"
-VpcId=$(echo $ALIASES | jq '.VpcId' -r cli-config.json)
-SubnetsList=$(echo $ALIASES | jq '.SubnetsList' -r cli-config.json)
-Subnets=$(echo $ALIASES | jq '.Subnets' -r cli-config.json)
-vpc_endpoints_sg_id=$(echo $ALIASES | jq '.EksEndPointSG' -r cli-config.json)
-
-if [ -z "${vpc_endpoints_sg_id}" ]; then
-
-    echo "creating endpoint security group "
-    vpc_endpoints_sg_id=$(aws ec2 create-security-group \
-    --group-name "${clusterName}-EndpointClientSecurityGroup" \
-    --description "Security group to designate resources access to the VPC endpoints" \
-    --vpc-id ${VpcId} \
-    --tag-specifications ResourceType=security-group,Tags="[{Key=Name,Value='${clusterName}-EndpointClientSecurityGroup'}, {Key=Environment,Value='lab'},{Key=Owner,Value='Myss'}]" \
+#./update_cli_json.sh "EksClusterName" ${clusterName}
+eks_cluster_create_response=$(aws eks create-cluster \
+    --name ${clusterName} \
+    --role-arn ${EksClusterRoleArn} \
+    --resources-vpc-config subnetIds=${Subnets},endpointPublicAccess=false,endpointPrivateAccess=true,securityGroupIds="${vpc_default_sg_id}" \
+    --logging '{"clusterLogging":[{"types":["api","audit","authenticator","controllerManager","scheduler"],"enabled":true}]}' \
+    --access-config authenticationMode=API_AND_CONFIG_MAP,bootstrapClusterCreatorAdminPermissions=true \
     --profile ${CliProfile} \
     --region ${Region} \
-    --output json | jq '.GroupId' | tr -d '"' )
+    --tags '{"Environment": "lab", "Owner" : "Myss"}' \
+    --output json)
 
-    echo "vpc endpoint security group :::: ${vpc_endpoints_sg_id}"
+echo ${eks_cluster_create_response}
+#platformVersion=$(echo -e "$eks_cluster_create_response" |  jq '.cluster.platformVersion' | tr -d '"')
+#./update_cli_json.sh "EksPlatformVersion" ${platformVersion}
 
-    #start control plane security groups rules
+echo "@@@@@@ completed creating eks cluster .... ${clusterName}"
 
-    aws ec2 authorize-security-group-ingress \
-    --group-id ${vpc_endpoints_sg_id} \
-        --ip-permissions IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs="[{GroupId=${vpc_endpoints_sg_id},Description='ingress from same security group'}]" \
-        --profile ${CliProfile} \
-        --region ${Region}
-    
-    # end control plane security groups
-    ./update_cli_json.sh "EksEndPointSG" ${vpc_endpoints_sg_id}
-fi
-echo "end point security group id ${vpc_endpoints_sg_id}"
-echo "checking any service endpoints need to be created $ENDPOINT_SERVICES_LIST"
-for endpoint_service in ${ENDPOINT_SERVICES_LIST//,/ }  #$(echo $ENDPOINT_SERVICES_LIST | sed "s/,/ /g")
+while [ $(aws eks describe-cluster --name ${clusterName} --query 'cluster.status' --output text --region ${Region}) == "CREATING" ]
 do
-    # call your procedure/other scripts here below
-    echo " endpoint service ::::: ${endpoint_service}"
-    aws ec2 create-vpc-endpoint \
-        --vpc-id ${VpcId} \
-        --vpc-endpoint-type Interface \
-        --service-name ${endpoint_service} \
-        --subnet-ids "${SubnetsList}"\
-        --security-group-id ${vpc_endpoints_sg_id} \
-        --tag-specifications ResourceType=vpc-endpoint,Tags="[{Key=Environment,Value='lab'},{Key=Owner,Value='Myss'}]" \
-        --profile ${CliProfile} \
-        --region ${Region} \
-        --output json
-    echo "completed endpoint for service ${endpoint_service}"
+    echo Cluster ${clusterName} status: CREATING...
+    sleep 60
 done
+echo Cluster ${clusterName} is ACTIVE
 
+ISSUER_URL=$(aws eks describe-cluster --name $clusterName --query cluster.identity.oidc.issuer --output text --region $Region)
+AWS_FINGERPRINT=9E99A48A9960B14926BB7F3B02E22DA2B0AB7280
 
-#!/bin/bash
+aws iam create-open-id-connect-provider \
+    --url $ISSUER_URL \
+    --thumbprint-list $AWS_FINGERPRINT \
+    --client-id-list sts.amazonaws.com \
+    --region ${Region} \
+    --profile ${CliProfile}
 
-ENDPOINT_SERVICES_LIST="com.amazonaws.us-east-2.logs,com.amazonaws.us-east-2.ecr.api,com.amazonaws.us-east-2.ssm,com.amazonaws.us-east-2.ecr.dkr,com.amazonaws.us-east-2.autoscaling, com.amazonaws.us-east-2.ec2, com.amazonaws.us-east-2.ssmmessages, com.amazonaws.us-east-2.sts"
-#ENDPOINT_SERVICES_LIST="com.amazonaws.us-east-2.logs,com.amazonaws.us-east-2.ecr.api"
-#ENDPOINT_SERVICES_LIST=""
+echo Registered OpenID Connect provider with IAM
+
+#./update_cli_json.sh Region ${Region}
